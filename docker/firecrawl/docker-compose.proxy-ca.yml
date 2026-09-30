@@ -1,0 +1,24 @@
+# Overlay applied only inside sandboxes that MITM outbound TLS (the Claude Code
+# cloud environment routes container egress through an agent proxy with its own
+# CA). Without it, every Node client in these images fails with
+# SELF_SIGNED_CERT_IN_CHAIN -- notably playwright-service, whose entrypoint
+# corepack-downloads pnpm at boot and exits 1 when that fetch is rejected.
+#
+# setup-env.sh adds `-f docker-compose.proxy-ca.yml` and exports CCR_CA_BUNDLE
+# only when the CA file actually exists, so the base compose stays portable to
+# hosts with no interception.
+services:
+  api:
+    environment:
+      NODE_EXTRA_CA_CERTS: /usr/local/share/ccr-proxy-ca.crt
+      NODE_OPTIONS: --use-openssl-ca
+      SSL_CERT_FILE: /usr/local/share/ccr-proxy-ca.crt
+    volumes:
+      - ${CCR_CA_BUNDLE:?CCR_CA_BUNDLE must point at the proxy CA bundle}:/usr/local/share/ccr-proxy-ca.crt:ro
+
+  playwright-service:
+    environment:
+      NODE_EXTRA_CA_CERTS: /usr/local/share/ccr-proxy-ca.crt
+      SSL_CERT_FILE: /usr/local/share/ccr-proxy-ca.crt
+    volumes:
+      - ${CCR_CA_BUNDLE:?CCR_CA_BUNDLE must point at the proxy CA bundle}:/usr/local/share/ccr-proxy-ca.crt:ro

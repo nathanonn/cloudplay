@@ -1,0 +1,9 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "cdpEndpoint": "__CDP_ENDPOINT__",
+    "contextOptions": {
+      "ignoreHTTPSErrors": true
+    }
+  }
+}

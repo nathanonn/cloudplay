@@ -1,0 +1,162 @@
+# Self-hosted Firecrawl for the Claude Code cloud environment.
+#
+# Vendored from upstream firecrawl/firecrawl docker-compose.yaml, with the
+# locally-built services swapped for published GHCR images so a fresh container
+# only has to pull, never build. The API is published on ${FIRECRAWL_PORT:-3663}:
+# 3663 is this project's convention (used by the hook, setup-env.sh and
+# CLAUDE.md); upstream defaults to 3002.
+#
+# Not plain `firecrawl`: that is upstream's project name, so a local Firecrawl
+# checkout would be the one `setup-env.sh --stop` tears down.
+name: cloudplay-firecrawl
+
+x-common-service: &common-service
+  # Survive a dockerd restart: the daemon is started per session, and a stack
+  # left down after a restart looks provisioned but answers nothing.
+  restart: unless-stopped
+  # Upstream asks for 65535 here. Sandboxed VMs often have a lower hard limit
+  # (the Claude Code cloud container caps it at 20000) and runc refuses to start
+  # the container at all when the request exceeds it. setup-env.sh exports the
+  # real `ulimit -Hn` as FIRECRAWL_NOFILE.
+  ulimits:
+    nofile:
+      soft: ${FIRECRAWL_NOFILE:-20000}
+      hard: ${FIRECRAWL_NOFILE:-20000}
+  networks:
+    - backend
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+      compress: "true"
+
+x-common-env: &common-env
+  REDIS_URL: redis://redis:6379
+  REDIS_RATE_LIMIT_URL: redis://redis:6379
+  PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+  POSTGRES_DB: postgres
+  POSTGRES_HOST: nuq-postgres
+  POSTGRES_PORT: 5432
+  USE_DB_AUTHENTICATION: "false"
+  NUM_WORKERS_PER_QUEUE: ${NUM_WORKERS_PER_QUEUE:-8}
+  CRAWL_CONCURRENT_REQUESTS: ${CRAWL_CONCURRENT_REQUESTS:-10}
+  MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-5}
+  BROWSER_POOL_SIZE: ${BROWSER_POOL_SIZE:-5}
+  LOGGING_LEVEL: ${LOGGING_LEVEL:-info}
+  # Optional: only needed for LLM-backed features (extract / agent / json format).
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  MODEL_NAME: ${MODEL_NAME:-}
+  SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT:-}
+
+services:
+  playwright-service:
+    restart: unless-stopped
+    image: ghcr.io/firecrawl/playwright-service:latest
+    environment:
+      PORT: 3000
+      MAX_CONCURRENT_PAGES: ${CRAWL_CONCURRENT_REQUESTS:-10}
+      BLOCK_MEDIA: ${BLOCK_MEDIA:-}
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: 2.0
+    mem_limit: 4G
+    memswap_limit: 4G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=1g
+
+  api:
+    <<: *common-service
+    image: ghcr.io/firecrawl/firecrawl:latest
+    environment:
+      <<: *common-env
+      HOST: "0.0.0.0"
+      PORT: 3002
+      EXTRACT_WORKER_PORT: 3004
+      WORKER_PORT: 3005
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+      HARNESS_STARTUP_TIMEOUT_MS: ${HARNESS_STARTUP_TIMEOUT_MS:-60000}
+      ENV: local
+    depends_on:
+      redis:
+        condition: service_started
+      playwright-service:
+        condition: service_started
+      nuq-postgres:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      # Loopback only: USE_DB_AUTHENTICATION is false, so on 0.0.0.0 anyone who
+      # can reach the host gets an unauthenticated scraping proxy.
+      - "127.0.0.1:${FIRECRAWL_PORT:-3663}:3002"
+    command: node dist/src/harness.js --start-docker
+    cpus: 4.0
+    mem_limit: 8G
+    memswap_limit: 8G
+
+  redis:
+    restart: unless-stopped
+    image: redis:alpine
+    networks:
+      - backend
+    command: redis-server --bind 0.0.0.0
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+        compress: "true"
+
+  rabbitmq:
+    restart: unless-stopped
+    image: rabbitmq:3-management
+    networks:
+      - backend
+    command: rabbitmq-server
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+        compress: "true"
+
+  nuq-postgres:
+    restart: unless-stopped
+    image: ghcr.io/firecrawl/nuq-postgres:latest
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    networks:
+      - backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+
+networks:
+  backend:
+    driver: bridge
