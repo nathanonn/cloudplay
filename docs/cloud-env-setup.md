@@ -173,12 +173,15 @@ backoff (5 s, 10 s, 20 s). Within a round, a Docker Hub image that fails is
 retried from Google's pull-through mirror, `mirror.gcr.io`, which does not
 share Hub's anonymous limit, and re-tagged under its original name, so compose
 finds it locally and never pulls. Images on other registries (`ghcr.io`) get
-the retries without the mirror.
+the retries without the mirror. `PULL_ATTEMPTS` must be a positive integer;
+any other value is logged and replaced by the default.
 
-The Chromium build needs the same treatment separately. BuildKit re-resolves
-the `FROM` image against its registry (`load metadata for docker.io/...`)
-even when the image is already local. The Dockerfile therefore takes its base
-as `ARG BASE_IMAGE`, and a failed build is retried with the mirror's copy.
+The Chromium build needs the same treatment separately. Its base image is
+pulled first if it is missing, with the same retries and mirror fallback. A failed pull is
+logged, and the build is attempted anyway. BuildKit may also re-resolve the
+`FROM` image against its registry (`load metadata for docker.io/...`) even
+when the image is already local, so the Dockerfile takes its base as
+`ARG BASE_IMAGE`, and a failed build is retried with the mirror's copy.
 
 If `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` are set in the environment, the
 script also runs `docker login` first. An authenticated account gets a much

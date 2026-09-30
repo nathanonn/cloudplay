@@ -201,6 +201,8 @@ All settings are environment variables and all are optional.
 | `FIRECRAWL_API_KEY` | `local-self-hosted` | Token the `firecrawl` CLI sends. Any value works, because self-hosted auth is off. |
 | `CCR_CA_BUNDLE` | `/root/.ccr/ca-bundle.crt` | CA bundle trusted by the containers. |
 | `FIRECRAWL_NOFILE` | live `ulimit -Hn` | `nofile` ulimit for Firecrawl containers. |
+| `PULL_ATTEMPTS` | `4` | Retry rounds per image pull, and for the Chromium build, with backoff and the `mirror.gcr.io` fallback. Must be a positive integer. |
+| `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` | unset | Logs in to Docker Hub before pulling, for a higher rate limit than anonymous pulls. |
 
 Set these in the cloud environment's environment variables, not in the repo.
 That way the hook and `setup-env.sh` both see them, which matters for the ports:

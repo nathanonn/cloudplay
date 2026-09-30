@@ -43,6 +43,12 @@ have() { command -v "$1" >/dev/null 2>&1; }
 lcurl() { curl -s --noproxy '*' "$@"; }
 
 PULL_ATTEMPTS="${PULL_ATTEMPTS:-4}"
+# A positive integer only: 0 would skip every pull without a word, and a
+# non-integer breaks seq. Fall back to the default rather than abort the setup.
+if ! [[ "$PULL_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  log "PULL_ATTEMPTS=${PULL_ATTEMPTS} is not a positive integer; using 4"
+  PULL_ATTEMPTS=4
+fi
 
 # --------------------------------------------------------------------------
 # Registry resilience
@@ -178,12 +184,16 @@ start_chromium() {
     fi
     log "building ${CHROMIUM_IMAGE}"
     cp "$CA_BUNDLE" "${ctx}/ca-bundle.crt" || return 1
-    # BuildKit re-resolves the base image against its registry even when it is
-    # present locally, so the build itself gets the retry + mirror treatment.
     local base
     base="$(sed -n 's/^ARG BASE_IMAGE=//p' "${ctx}/Dockerfile" | head -n1)"
+    base="${base:-chromedp/headless-shell:latest}"
+    # Pull the base first so the build finds it locally. A failed pull is not
+    # fatal: the build below has retries and a mirror fallback of its own.
+    pull_image "$base" || log "base image ${base} not pulled; building anyway"
+    # BuildKit may still re-resolve the base image against its registry even
+    # when it is present locally, so the build gets the retry + mirror treatment.
     build_chromium() { docker build --build-arg "BASE_IMAGE=$1" -t "$CHROMIUM_IMAGE" "$ctx"; }
-    retry_with_mirror "${base:-chromedp/headless-shell:latest}" build_chromium \
+    retry_with_mirror "$base" build_chromium \
       || { log "chromium build failed; see $LOG_FILE"; return 1; }
   fi
 
@@ -255,13 +265,18 @@ wait_for_firecrawl() {
   # The deadline counts from script start (bash's SECONDS), not from here, so
   # a slow lock wait or provision cannot push the hook past its asyncTimeout.
   # 10#: a leading zero would otherwise be read as octal ("--wait 09" errors).
+  # Check before testing the deadline, so a provision that already overran it
+  # still gets one look rather than a failure without checking at all.
   local deadline=$((10#${1:-300}))
-  while [ $SECONDS -lt $deadline ]; do
-    firecrawl_up && { log "firecrawl ready at http://localhost:${FIRECRAWL_PORT}"; return 0; }
+  until firecrawl_up; do
+    if [ $SECONDS -ge $deadline ]; then
+      log "firecrawl did not become ready within ${1:-300}s of setup start"
+      return 1
+    fi
     sleep 5
   done
-  log "firecrawl did not become ready within ${1:-300}s of setup start"
-  return 1
+  log "firecrawl ready at http://localhost:${FIRECRAWL_PORT}"
+  return 0
 }
 
 provision() {
