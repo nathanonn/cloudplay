@@ -15,7 +15,11 @@
 # Linux actually reads. The base image ships no CA store at all, so
 # ca-certificates goes in first; Debian's apt repos are plain HTTP and need no
 # trust to reach.
-FROM chromedp/headless-shell:latest
+#
+# BASE_IMAGE is an ARG so setup-env.sh can fall back to a registry mirror when
+# Docker Hub rate-limits the build's base-image lookup.
+ARG BASE_IMAGE=chromedp/headless-shell:latest
+FROM ${BASE_IMAGE}
 
 # Full trust bundle, copied into the build context by setup-env.sh.
 COPY ca-bundle.crt /usr/local/share/ca-certificates/ccr-ca-bundle.crt

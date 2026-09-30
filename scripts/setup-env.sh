@@ -42,6 +42,71 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # curl that never routes through the agent proxy -- these are all loopback.
 lcurl() { curl -s --noproxy '*' "$@"; }
 
+PULL_ATTEMPTS="${PULL_ATTEMPTS:-4}"
+
+# --------------------------------------------------------------------------
+# Registry resilience
+# --------------------------------------------------------------------------
+# Anonymous Docker Hub pulls are rate-limited per egress IP, and cloud
+# containers share IPs, so a cold provision can hit 429 Too Many Requests
+# before it has pulled anything, and left to compose a single failed pull aborts
+# the whole `compose up`. Docker Hub images are also served by Google's pull-through
+# mirror (mirror.gcr.io), which does not share that limit, so it is the fallback.
+
+# Print the mirror.gcr.io equivalent of a Docker Hub image ref; fail (and
+# print nothing) for images hosted on any other registry.
+hub_mirror_ref() {
+  local ref="$1" first="${1%%/*}"
+  if [[ "$ref" == */* && ( "$first" == *.* || "$first" == *:* || "$first" == localhost ) ]]; then
+    [ "$first" = docker.io ] || return 1
+    ref="${ref#docker.io/}"
+  fi
+  [[ "$ref" == */* ]] || ref="library/${ref}"
+  printf 'mirror.gcr.io/%s' "$ref"
+}
+
+# retry_with_mirror REF CMD...: run `CMD REF`, then `CMD MIRROR_REF` for a
+# Docker Hub image, with exponential backoff between rounds. On success
+# USED_REF holds whichever ref worked.
+retry_with_mirror() {
+  local ref="$1" mirror attempt delay=5
+  shift
+  mirror="$(hub_mirror_ref "$ref")"
+  for attempt in $(seq 1 "$PULL_ATTEMPTS"); do
+    USED_REF="$ref"
+    "$@" "$ref" >>"$LOG_FILE" 2>&1 && return 0
+    if [ -n "$mirror" ]; then
+      USED_REF="$mirror"
+      "$@" "$mirror" >>"$LOG_FILE" 2>&1 && { log "${ref}: used mirror ${mirror}"; return 0; }
+    fi
+    [ "$attempt" -lt "$PULL_ATTEMPTS" ] || break
+    log "${ref}: attempt ${attempt}/${PULL_ATTEMPTS} failed; retrying in ${delay}s"
+    sleep "$delay"
+    delay=$((delay * 2))
+  done
+  log "${ref}: giving up after ${PULL_ATTEMPTS} attempts; see $LOG_FILE"
+  return 1
+}
+
+# Pull an image unless it is already present. A mirror pull is re-tagged
+# under the original name, so compose finds it and never pulls itself.
+pull_image() {
+  docker image inspect "$1" >/dev/null 2>&1 && return 0
+  log "pulling $1"
+  retry_with_mirror "$1" docker pull || return 1
+  [ "$USED_REF" = "$1" ] || docker tag "$USED_REF" "$1"
+}
+
+# Optional: an authenticated Docker Hub account gets a far higher pull limit.
+# Set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN in the environment to use it.
+docker_hub_login() {
+  [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ] || return 0
+  printf '%s' "$DOCKERHUB_TOKEN" \
+    | docker login --username "$DOCKERHUB_USERNAME" --password-stdin >>"$LOG_FILE" 2>&1 \
+    && log "logged in to Docker Hub as ${DOCKERHUB_USERNAME}" \
+    || log "Docker Hub login failed; continuing anonymously"
+}
+
 firecrawl_up() { [ "$(lcurl -o /dev/null -w '%{http_code}' "http://localhost:${FIRECRAWL_PORT}/" 2>/dev/null)" = "200" ]; }
 chromium_up()  { lcurl -o /dev/null "http://localhost:${CHROMIUM_CDP_PORT}/json/version" 2>/dev/null; }
 
@@ -113,7 +178,12 @@ start_chromium() {
     fi
     log "building ${CHROMIUM_IMAGE}"
     cp "$CA_BUNDLE" "${ctx}/ca-bundle.crt" || return 1
-    docker build -t "$CHROMIUM_IMAGE" "$ctx" >>"$LOG_FILE" 2>&1 \
+    # BuildKit re-resolves the base image against its registry even when it is
+    # present locally, so the build itself gets the retry + mirror treatment.
+    local base
+    base="$(sed -n 's/^ARG BASE_IMAGE=//p' "${ctx}/Dockerfile" | head -n1)"
+    build_chromium() { docker build --build-arg "BASE_IMAGE=$1" -t "$CHROMIUM_IMAGE" "$ctx"; }
+    retry_with_mirror "${base:-chromedp/headless-shell:latest}" build_chromium \
       || { log "chromium build failed; see $LOG_FILE"; return 1; }
   fi
 
@@ -144,6 +214,21 @@ start_firecrawl() {
   export FIRECRAWL_NOFILE="${FIRECRAWL_NOFILE:-$(ulimit -Hn)}"
   export FIRECRAWL_PORT
   [ -r "$CA_BUNDLE" ] && export CCR_CA_BUNDLE="$CA_BUNDLE"
+
+  # Pull up front, in parallel, each image with its own retries and mirror
+  # fallback. Left to compose, one failed pull interrupts all the others.
+  local img pids=() failed=0 pid
+  # shellcheck disable=SC2046
+  while read -r img; do
+    [ -n "$img" ] || continue
+    pull_image "$img" &
+    pids+=("$!")
+  done < <(docker compose $(compose_args) config --images 2>>"$LOG_FILE")
+  for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+  if [ "$failed" -ne 0 ]; then
+    log "firecrawl images incomplete; not starting the stack"
+    return 1
+  fi
 
   log "starting firecrawl stack on port ${FIRECRAWL_PORT}"
   # shellcheck disable=SC2046
@@ -184,6 +269,7 @@ provision() {
   write_env_file
   write_playwright_config
   if start_dockerd; then
+    docker_hub_login
     start_chromium
     start_firecrawl
   fi

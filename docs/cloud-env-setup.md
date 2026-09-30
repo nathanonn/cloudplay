@@ -3,7 +3,7 @@
 This documents how `cloudplay` brings up a self-hosted Firecrawl stack and a
 working `playwright-cli` automatically in a Claude Code cloud session, and —
 more usefully — *why* the setup looks the way it does. Most of the shape comes
-from four constraints of the sandbox that are not obvious until you hit them.
+from five constraints of the sandbox that are not obvious until you hit them.
 
 ## What runs, and when
 
@@ -55,7 +55,7 @@ exits 1. The hook's 840 s keeps the script inside the 900 s `asyncTimeout`.
 `--wait` releases the setup lock once provisioning is done, so its polling
 never holds up another run.
 
-## The four constraints
+## The five constraints
 
 ### 1. Nothing persists, so a one-time setup script is not enough
 
@@ -151,6 +151,38 @@ A version-matched Playwright *server* (`browser.remoteEndpoint`) would be
 richer than CDP, but `@playwright/cli` currently pins
 `playwright-core@1.63.0-alpha-2026-08-05` and no published image matches an
 alpha build. CDP is version-tolerant, so that is what is used.
+
+### 5. Docker Hub rate-limits anonymous pulls, and the egress IP is shared
+
+A cold provision once died with
+
+```
+failed to resolve reference "docker.io/library/rabbitmq:3-management":
+unexpected status from HEAD request ... 429 Too Many Requests
+```
+
+Anonymous Docker Hub pulls are limited per source IP, and cloud sessions share
+egress IPs, so the quota can be spent before this session pulls anything.
+Left to `docker compose up`, that one failed pull interrupted every other pull
+in flight and the stack never came up. Retrying alone does not help much: the
+quota refills over hours, not seconds.
+
+So `setup-env.sh` now pulls every image itself before `compose up`, in
+parallel, each with up to `PULL_ATTEMPTS` (default 4) rounds and exponential
+backoff (5 s, 10 s, 20 s). Within a round, a Docker Hub image that fails is
+retried from Google's pull-through mirror, `mirror.gcr.io`, which does not
+share Hub's anonymous limit, and re-tagged under its original name, so compose
+finds it locally and never pulls. Images on other registries (`ghcr.io`) get
+the retries without the mirror.
+
+The Chromium build needs the same treatment separately. BuildKit re-resolves
+the `FROM` image against its registry (`load metadata for docker.io/...`)
+even when the image is already local. The Dockerfile therefore takes its base
+as `ARG BASE_IMAGE`, and a failed build is retried with the mirror's copy.
+
+If `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` are set in the environment, the
+script also runs `docker login` first. An authenticated account gets a much
+higher pull limit.
 
 ## Connecting to the local instance
 
