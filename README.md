@@ -13,6 +13,10 @@ problem: open a session, and a few moments later `firecrawl` and
 The reasoning behind each workaround lives in
 [`docs/cloud-env-setup.md`](docs/cloud-env-setup.md).
 
+Separately, the repo ships an optional pair of [session handoff
+hooks](#session-handoffs-optional). They make every commit Claude creates carry a
+short handoff doc, so work picks up cleanly after an autocompact.
+
 ## What you get
 
 | Piece | Where it runs | Reached at |
@@ -134,13 +138,24 @@ deadline counts from when the script starts, which keeps it inside the hook's
    ## Cloud sessions (Claude Code on the web)
 
    - Firecrawl and `playwright-cli` are provisioned automatically by the
-     SessionStart hook. Do not start Firecrawl by hand.
-   - Check the stacks with `./scripts/setup-env.sh --status`. If Firecrawl is
-     still booting, `./scripts/setup-env.sh --wait` blocks until it answers.
+     SessionStart hook (`.claude/hooks/session-start.sh` -> `scripts/setup-env.sh`).
+     Do not start Firecrawl by hand, and don't run `./scripts/setup-env.sh --stop`.
+   - Check the stacks with `./scripts/setup-env.sh --status`. If Firecrawl is still
+     booting, `./scripts/setup-env.sh --wait` blocks until it answers.
+   - The hook exports `FIRECRAWL_API_URL` and `FIRECRAWL_API_KEY`; a shell without
+     them can `source .cloudplay/env.sh`.
    - Never run `firecrawl --status`; it checks cloud auth and always reports
      "Not authenticated" against a local instance.
-   - `playwright-cli` drives a browser running in a container over CDP.
+   - `playwright-cli` drives a browser running in a container over CDP; host-side
+     Chromium cannot reach the network in this sandbox.
+   - See `docs/cloud-env-setup.md` for the constraints behind this setup.
    ```
+
+   This repo's own [`CLAUDE.md`](CLAUDE.md) has this section plus general
+   Firecrawl rules (use the Firecrawl skills over built-in web tools, pass the
+   rules on to subagents). [`AGENTS.md`](AGENTS.md) is an identical copy for
+   agents that read that file instead, such as Codex. If you keep both, edit
+   them together.
 
 6. **Check the cloud environment's network access.** The first run pulls from
    npm, Docker Hub, and `ghcr.io`, and the Chromium image build installs
@@ -149,6 +164,101 @@ deadline counts from when the script starts, which keeps it inside the hook's
 
 Then commit, open the repo in Claude Code on the web, and give it a minute or
 two on the first cold start.
+
+## Session handoffs (optional)
+
+This part is independent of the cloud setup and runs in local sessions too.
+When a long session autocompacts, the details of what was decided and why are
+lost. Here, every commit carries a short handoff doc in `docs/handoffs/`, and
+after a compaction Claude is told to read the latest one.
+
+| Piece | Hook event | What it does |
+| --- | --- | --- |
+| `.claude/hooks/require-handoff.sh` | `PreToolUse` (`Bash`) | Blocks a `git commit` that doesn't include a new handoff doc. |
+| `.claude/hooks/post-compact-handoff.sh` | `SessionStart` (`compact`) | After a compaction, points Claude at the newest `docs/handoffs/*.md`. |
+| `handoff-doc` skill | — | Writes the handoff from the session's context. |
+| `## Handoffs` in `CLAUDE.md` / `AGENTS.md` | — | Tells Claude when to commit and how to name handoffs. |
+
+The commit gate (`require-handoff.sh`) works like this:
+
+- A commit goes through only if a new `docs/handoffs/*.md` is already staged as
+  added, or the same command `git add`s it (for example
+  `git add docs/handoffs/… && git commit …`, or `git add -A` / `.`).
+- `git commit --amend` is let through, since the commit being amended already
+  has its handoff.
+- Commits from subagents are always denied. A handoff needs the full session
+  context, so subagents report their changes back and the main session commits.
+- It only sees Claude's Bash tool calls. Commits you make yourself in a terminal
+  aren't checked.
+- It needs `jq` on the `PATH`.
+
+Handoffs are named `YYYYMMDD_NN_slug.md`, with `NN` counting up within a day, so
+sorting by name puts the newest last.
+
+To add this to your own project:
+
+1. **Copy the hooks** and keep them executable:
+
+   ```bash
+   chmod +x .claude/hooks/require-handoff.sh .claude/hooks/post-compact-handoff.sh
+   ```
+
+2. **Add the `handoff-doc` skill.** This repo vendors it under
+   `.agents/skills/handoff-doc/` (symlinked from `.claude/skills/`), from
+   [`nathanonn/agent-skills`](https://github.com/nathanonn/agent-skills).
+
+3. **Register both hooks** in `.claude/settings.json`, next to the
+   `SessionStart` entry from the cloud setup:
+
+   ```json
+   {
+     "hooks": {
+       "SessionStart": [
+         {
+           "matcher": "compact",
+           "hooks": [
+             {
+               "type": "command",
+               "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-compact-handoff.sh"
+             }
+           ]
+         }
+       ],
+       "PreToolUse": [
+         {
+           "matcher": "Bash",
+           "hooks": [
+             {
+               "type": "command",
+               "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/require-handoff.sh"
+             }
+           ]
+         }
+       ]
+     }
+   }
+   ```
+
+4. **Add the instructions** to `CLAUDE.md` (and `AGENTS.md`, if you use one):
+
+   ```markdown
+   ## Handoffs
+
+   - Commit at each **checkpoint** without asking: a unit of work (feature, fix,
+     decision) that is done and verified, or the point before switching to an
+     unrelated task. The handoff each commit carries is what survives autocompact.
+   - Before every commit, run the `handoff-doc` skill to write a new handoff in
+     `docs/handoffs/` (`YYYYMMDD_NN_slug.md`, next `NN` for the day), and include
+     it in that commit.
+   - Only the main session commits. Subagents report their changes back instead,
+     since a handoff needs the full session context.
+   - After an autocompact, read the latest handoff in `docs/handoffs/` before
+     continuing. Read earlier ones too if the latest leaves gaps.
+   ```
+
+   The first bullet lets Claude commit without asking you first. Drop it if you
+   want to approve each commit yourself; the gate still makes sure each one
+   carries a handoff.
 
 ## Everyday use
 
@@ -235,8 +345,11 @@ the hook writes the URLs into the session before the setup script runs.
 
 ```
 .claude/
-  hooks/session-start.sh     SessionStart hook (async, cloud-only)
-  settings.json              registers the hook
+  hooks/
+    session-start.sh         SessionStart hook (async, cloud-only)
+    require-handoff.sh       PreToolUse gate: commits must carry a new handoff
+    post-compact-handoff.sh  SessionStart (compact): point at the latest handoff
+  settings.json              registers the hooks
   skills/                    symlinks into .agents/skills/
 .agents/skills/              vendored agent skills
 config/
@@ -244,9 +357,12 @@ config/
 docker/
   chromium/Dockerfile        headless Chromium with the sandbox CAs trusted
   firecrawl/                 vendored Firecrawl compose + TLS-interception overlay
-docs/cloud-env-setup.md      the constraints and why each workaround exists
+docs/
+  cloud-env-setup.md         the constraints and why each workaround exists
+  handoffs/                  one handoff doc per commit (YYYYMMDD_NN_slug.md)
 scripts/setup-env.sh         idempotent provisioner (status / wait / stop)
 skills-lock.json             pinned skill sources
+CLAUDE.md, AGENTS.md         agent instructions (identical copies)
 LICENSE                      MIT
 ```
 
