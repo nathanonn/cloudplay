@@ -3,7 +3,6 @@
 - Commit at each **checkpoint** without asking: a unit of work (feature, fix,
   decision) that is done and verified, or the point before switching to an
   unrelated task. The handoff each commit carries is what survives autocompact.
-  Commit locally on `main`; pushing stays with the user.
 - Before every commit, run the `handoff-doc` skill to write a new handoff in
   `docs/handoffs/` (`YYYYMMDD_NN_slug.md`, next `NN` for the day), and include
   it in that commit.
