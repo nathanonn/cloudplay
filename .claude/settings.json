@@ -1,4 +1,10 @@
 {
+  "worktree": {
+    "baseRef": "head"
+  },
+  "env": {
+    "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"
+  },
   "hooks": {
     "SessionStart": [
       {

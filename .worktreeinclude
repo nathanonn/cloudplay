@@ -1,0 +1,4 @@
+# Gitignored files copied into every Claude Code worktree (sub-agent isolation).
+# Without them, worktree agents lack the Firecrawl env and playwright-cli's CDP config.
+.cloudplay/env.sh
+.playwright/cli.config.json

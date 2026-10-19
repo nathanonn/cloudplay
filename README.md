@@ -26,6 +26,7 @@ short handoff doc, so work picks up cleanly after an autocompact.
 | `firecrawl` CLI (`firecrawl-cli`) | Host, npm global | points at the local API |
 | `playwright-cli` (`@playwright/cli`) | Host, npm global | drives the container browser over CDP |
 | Firecrawl and playwright-cli agent skills | `.claude/skills/` | loaded by Claude Code |
+| `orchestrate` skill (optional, Claude Code only) | `.claude/skills/orchestrate/` | loaded by Claude Code |
 
 `search`, `scrape`, `map`, and `crawl` work with no API keys. Search falls back
 to DuckDuckGo when no SearXNG endpoint is configured.
@@ -153,9 +154,10 @@ deadline counts from when the script starts, which keeps it inside the hook's
 
    This repo's own [`CLAUDE.md`](CLAUDE.md) has this section plus general
    Firecrawl rules (use the Firecrawl skills over built-in web tools, pass the
-   rules on to subagents). [`AGENTS.md`](AGENTS.md) is an identical copy for
-   agents that read that file instead, such as Codex. If you keep both, edit
-   them together.
+   rules on to subagents). [`AGENTS.md`](AGENTS.md) is a copy for agents that
+   read that file instead, such as Codex. The two match except for the
+   Claude Code-only [`## Orchestration`](#orchestration-optional) section in
+   `CLAUDE.md`. If you keep both, edit them together.
 
 6. **Check the cloud environment's network access.** The first run pulls from
    npm, Docker Hub, and `ghcr.io`, and the Chromium image build installs
@@ -260,6 +262,115 @@ To add this to your own project:
    want to approve each commit yourself; the gate still makes sure each one
    carries a handoff.
 
+## Orchestration (optional)
+
+This part builds on the session handoffs above and runs in local sessions too.
+It works in Claude Code only, because it drives Claude Code's Agent tool. For
+any request beyond a quick lookup or a one-line edit, the main session acts as
+an orchestrator: it plans the work, hands each task to a sub-agent, checks what
+comes back, and commits the result.
+
+| Piece | What it does |
+| --- | --- |
+| `.claude/skills/orchestrate/` | The `orchestrate` skill, with a model guide, a brief template for sub-agents, and the worktree protocol. |
+| `.claude/skills/orchestrate/scripts/` | `preflight.sh` checks the branch and settings before any dispatch; `integrate-worktree.sh` and `cleanup-worktree.sh` bring a worktree's changes back, then remove it. |
+| `worktree` and `env` in `.claude/settings.json` | Start worktree agents from the current branch, and turn on the Task tools in local sessions. |
+| `.worktreeinclude` | Copies `.cloudplay/env.sh` and `.playwright/cli.config.json` into each worktree, so worktree agents can use Firecrawl and `playwright-cli`. |
+| `## Orchestration` in `CLAUDE.md` | Tells Claude to load the skill for every request. |
+
+A run works like this:
+
+- Claude builds a task list and routes each task to a sub-agent with an
+  explicit model and effort.
+- Up to 5 sub-agents run at once. Writers that run in parallel each get their
+  own git worktree under `.claude/worktrees/`.
+- Claude verifies each result itself, applies the worktree's changes to the
+  main checkout, and removes the worktree.
+- Only the main session commits, through `handoff-doc`, on a feature branch.
+  On `main` or a detached HEAD it asks for a branch first.
+
+Haiku takes narrow, read-only lookups, Sonnet is the default worker, and Opus
+handles reviews, architecture and hard debugging. Fable is opt-in: it runs only
+when you ask for it by name, or after Opus has missed twice on a task and you
+approve it. If a request says not to ask ("don't ask me", "no questions"),
+Claude makes those calls itself, lists them in its final report, and never uses
+Fable, even if the request names it.
+
+To add this to your own project (with session handoffs already set up):
+
+1. **Copy the skill** into `.claude/skills/orchestrate/` as a real directory,
+   not a symlink into `.agents/skills/`. It is for Claude Code only and isn't
+   vendored from another repo, so it has no `skills-lock.json` entry.
+
+2. **Add two settings** to `.claude/settings.json`, next to `hooks`. If the
+   file already has an `env` or `worktree` block, merge these keys into it
+   rather than adding a second one:
+
+   ```json
+   {
+     "worktree": { "baseRef": "head" },
+     "env": { "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1" }
+   }
+   ```
+
+   `baseRef: "head"` starts worktree agents from your current HEAD, unpushed
+   commits included, instead of `origin/main`. Cloud sessions read only the
+   committed settings, so commit it; without it, writers run one at a time with
+   no worktrees. The `env` entry turns on the Task tools in local sessions.
+
+3. **Set up the worktrees.** Add these lines to `.gitignore`. The second block
+   keeps Claude Code's runtime files out of `git add -A`:
+
+   ```gitignore
+   # Claude Code sub-agent worktrees (orchestrate skill)
+   .claude/worktrees/
+
+   # Claude Code runtime state
+   .claude/agent-registry.json
+   .claude/checkpoints/
+   .claude/mailbox/
+   .claude/scheduled_tasks.lock
+   ```
+
+   Then create `.worktreeinclude` at the repo root:
+
+   ```
+   .cloudplay/env.sh
+   .playwright/cli.config.json
+   ```
+
+   A new worktree has none of the generated, gitignored files, so this list
+   copies these two in.
+
+4. **Add the instructions** to `CLAUDE.md`, as its last section:
+
+   ```markdown
+   ## Orchestration
+
+   - **Main session only.** Sub-agents ignore this section: do your brief, don't orchestrate.
+   - Load the `orchestrate` skill for every request and follow it (task list, routed
+     sub-agents with explicit model and effort, worktrees for parallel writers).
+     The only exemptions: a single quick lookup, a one-line edit, and git,
+     integration, handoff and commit work, which the main session does itself.
+   - `model: "fable"` is opt-in, never a default: use it only when the user asks for
+     it by name, or after Opus has missed twice on the same task and the user
+     approves it when asked. Never in a run where the request says not to ask,
+     even if it names Fable.
+   - An orchestrated run never works on `main`: on `main` or a detached HEAD, ask for
+     a branch first (the one your system prompt names, else `claude/<slug>`; if the
+     request says not to ask, create that branch yourself), and check again before
+     any orchestrated commit. Exempt one-liners and housekeeping may happen on `main`.
+   ```
+
+   Leave it out of `AGENTS.md`. Agents that read that file, such as Codex,
+   can't drive Claude Code's Agent tool.
+
+This section makes orchestration always on. To have it run only when you ask,
+delete the section, and in the `description` in the skill's `SKILL.md` replace
+the whole sentence that starts "Use it for every request" with "Use it only
+when the user asks to orchestrate, use sub-agents, work in parallel, delegate
+or fan out." To turn it off entirely, delete the skill directory as well.
+
 ## Everyday use
 
 ```bash
@@ -349,9 +460,11 @@ the hook writes the URLs into the session before the setup script runs.
     session-start.sh         SessionStart hook (async, cloud-only)
     require-handoff.sh       PreToolUse gate: commits must carry a new handoff
     post-compact-handoff.sh  SessionStart (compact): point at the latest handoff
-  settings.json              registers the hooks
-  skills/                    symlinks into .agents/skills/
+  settings.json              registers the hooks; worktree base, Task tools
+  skills/                    symlinks into .agents/skills/, plus orchestrate/
+    orchestrate/             orchestration skill (Claude Code only, not vendored)
 .agents/skills/              vendored agent skills
+.worktreeinclude             gitignored files copied into sub-agent worktrees
 config/
   playwright-cli.config.json template; rendered to .playwright/cli.config.json
 docker/
@@ -362,7 +475,7 @@ docs/
   handoffs/                  one handoff doc per commit (YYYYMMDD_NN_slug.md)
 scripts/setup-env.sh         idempotent provisioner (status / wait / stop)
 skills-lock.json             pinned skill sources
-CLAUDE.md, AGENTS.md         agent instructions (identical copies)
+CLAUDE.md, AGENTS.md         agent instructions (CLAUDE.md adds ## Orchestration)
 LICENSE                      MIT
 ```
 

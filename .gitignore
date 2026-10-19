@@ -120,3 +120,12 @@ docker/chromium/ca-bundle.crt
 .claude/settings.local.json
 .claude/.cc-writes/
 CLAUDE.local.md
+
+# Claude Code sub-agent worktrees (orchestrate skill)
+.claude/worktrees/
+
+# Claude Code runtime state
+.claude/agent-registry.json
+.claude/checkpoints/
+.claude/mailbox/
+.claude/scheduled_tasks.lock

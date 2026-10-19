@@ -32,3 +32,19 @@
 - `playwright-cli` drives a browser running in a container over CDP; host-side
   Chromium cannot reach the network in this sandbox.
 - See `docs/cloud-env-setup.md` for the constraints behind this setup.
+
+## Orchestration
+
+- **Main session only.** Sub-agents ignore this section: do your brief, don't orchestrate.
+- Load the `orchestrate` skill for every request and follow it (task list, routed
+  sub-agents with explicit model and effort, worktrees for parallel writers).
+  The only exemptions: a single quick lookup, a one-line edit, and git,
+  integration, handoff and commit work, which the main session does itself.
+- `model: "fable"` is opt-in, never a default: use it only when the user asks for
+  it by name, or after Opus has missed twice on the same task and the user
+  approves it when asked. Never in a run where the request says not to ask,
+  even if it names Fable.
+- An orchestrated run never works on `main`: on `main` or a detached HEAD, ask for
+  a branch first (the one your system prompt names, else `claude/<slug>`; if the
+  request says not to ask, create that branch yourself), and check again before
+  any orchestrated commit. Exempt one-liners and housekeeping may happen on `main`.
