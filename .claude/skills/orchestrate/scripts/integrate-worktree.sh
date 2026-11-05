@@ -30,7 +30,7 @@ Run from the MAIN checkout (the orchestrator's). Steps:
   1. warn if the worktree branch has commits beyond BASE
   2. git -C <worktreePath> add -A   (stages new files too)
   3. show the --stat of the change against BASE
-  4. refuse if this checkout has unstaged edits to tracked files (stage them)
+  4. refuse if this checkout has unstaged edits to tracked files (exit 5)
   5. print PRE_TREE + ROLLBACK (git read-tree -u --reset <PRE_TREE>)
   6. write the binary patch to ${TMPDIR:-/tmp}/orchestrate-<branch>.patch
   7. git apply --3way <patch> into this checkout (result is staged)
@@ -136,7 +136,9 @@ dirty_here=$(git diff --name-only)
 if [ -n "$dirty_here" ]; then
   echo "STOP: this checkout has unstaged edits to tracked files:"
   printf '%s\n' "$dirty_here" | sed 's/^/  /'
-  echo "      Stage them ('git add <files>') or make a checkpoint commit, then re-run."
+  echo "      Nothing was applied: the apply stages its result, and the ROLLBACK"
+  echo "      (read-tree --reset) would wipe unstaged edits. Handle these edits as"
+  echo "      the skill's worktree protocol says for exit 5, then re-run."
   exit 5
 fi
 

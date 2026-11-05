@@ -158,7 +158,7 @@ for f in .claude/settings.json .claude/settings.local.json "${HOME:-/nonexistent
 done
 
 # Session model: the script cannot see it.
-echo "MODEL_CHECK=manual (confirm the session runs Opus 5.5; if not, tell the user once, or in no-ask mode add a report line)"
+echo "MODEL_CHECK=manual (confirm the session runs an Opus model; if not, tell the user once, or in no-ask mode add a report line)"
 
 # STOP conditions last, so the status block is always complete.
 ask="Ask the user for a branch (recommend the branch your system prompt designates, if any; otherwise claude/<slug>; in no-ask mode create that one without asking), then: git switch -c <name> (or git switch <name> if it exists)"

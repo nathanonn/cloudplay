@@ -63,12 +63,39 @@ if [ "${#POS[@]}" -ne 2 ]; then
 fi
 WT=${POS[0]}; WB=${POS[1]}
 
+# abs_path <path>: absolute path with symlinks resolved, like GNU `realpath -m`
+# but portable (no realpath/readlink -f; macOS and BSD lack the GNU flags).
+# The longest existing directory prefix is resolved with `cd -P` + `pwd -P`;
+# the components after it (a worktree that is already gone) are appended
+# lexically, with "." dropped and ".." removing the previous component.
+abs_path() (
+  p=$1; rest=""
+  case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+  while :; do
+    while [ "$p" != "/" ] && [ "${p%/}" != "$p" ]; do p=${p%/}; done
+    [ -d "$p" ] && break
+    rest="${p##*/}${rest:+/$rest}"
+    p=${p%/*}
+    [ -n "$p" ] || p=/
+  done
+  out=$(cd -P -- "$p" && pwd -P) || exit 1
+  set -f; IFS=/
+  for part in $rest; do
+    case "$part" in
+      ""|.) ;;
+      ..) out=${out%/*}; [ -n "$out" ] || out=/ ;;
+      *) if [ "$out" = / ]; then out="/$part"; else out="$out/$part"; fi ;;
+    esac
+  done
+  printf '%s\n' "$out"
+)
+
 if ! TOP=$(git rev-parse --show-toplevel 2>/dev/null); then
   echo "ERROR: run this from inside the main checkout of the repository." >&2
   exit 1
 fi
 cd "$TOP"
-TOP_ABS=$(realpath "$TOP")
+TOP_ABS=$(abs_path "$TOP")
 refuse() { echo "REFUSED: $*"; echo "         Nothing was changed."; exit 2; }
 
 # --- Guard 1: branch name.
@@ -86,7 +113,7 @@ if [ "$ANY" -ne 1 ] && [[ "$WB" != worktree-* ]]; then
 fi
 
 # --- Guard 2: path must sit under .claude/worktrees/.
-WT_ABS=$(realpath -m "$WT")
+WT_ABS=$(abs_path "$WT")
 case "$WT_ABS/" in
   "$TOP_ABS/.claude/worktrees/"?*) ;;
   *) refuse "$WT is not under $TOP_ABS/.claude/worktrees/." ;;
@@ -105,7 +132,7 @@ records=$(git worktree list --porcelain | awk '
 match_branch=""; match_locked=0; match_reason=""; found=0; branch_elsewhere=""
 while IFS=$'\t' read -r p b l r; do
   [ -z "$p" ] && continue
-  pa=$(realpath -m "$p")
+  pa=$(abs_path "$p")
   if [ "$pa" = "$WT_ABS" ]; then
     found=1; match_branch=$b; match_locked=$l; match_reason=$r
   elif [ "$b" = "$WB" ]; then

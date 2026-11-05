@@ -85,7 +85,7 @@ one. Wherever a skill says "ask" or "tell the user", do this instead:
 | Leftover worktrees (`WORKTREES>0`) | ask: integrate or discard | leave them untouched (no integrate, no cleanup, never `--force-unlock`); list paths and branches under **Skipped** |
 | Plan, under ~95% confident | AskUserQuestion with a recommendation | take the option you would have recommended |
 | Task count grew ~50% | stop and re-plan with the user | re-plan yourself, then carry on |
-| Session model is not Opus 5.5 | tell the user once | a line in the report |
+| Session model is not an Opus model | tell the user once | a line in the report |
 | Preflight WARN that says "tell the user" | tell the user | a line in the report |
 | Opus missed twice on a task | ask whether to use Fable | no Fable: do it in-session, or report what is stuck |
 | Conflict needing a product decision | (resolved in-session anyway) | take the recommended resolution |
@@ -115,8 +115,9 @@ bash "${CLAUDE_SKILL_DIR}/scripts/preflight.sh"
 - **Exit 3 (`STOP`)**: you are inside a linked worktree. `cd` to the main checkout
   it prints and re-run. Never dispatch, integrate or commit from a worktree.
 - **Model check**: look at the model named in your system prompt. If it is not
-  Opus 5.5, tell the user once that this skill is tuned for an Opus 5.5 orchestrator
-  (`/model opus`) and carry on (no-ask mode: a report line). Don't switch it yourself.
+  an Opus model, tell the user once that this skill expects an Opus orchestrator
+  (it was tuned on Opus 5.5; `/model opus`) and carry on (no-ask mode: a report
+  line). Don't switch it yourself.
 - Act on every `WARN` line as the worktree protocol (§3) says. Note `TREE` and
   keep `BASE`.
 
@@ -221,10 +222,10 @@ restores this checkout exactly as it was before this patch. Exit 0 means the cha
 is staged here: verify it, then mark the task completed. Exit 3 means conflicts:
 resolve them in the main session (never hand them to an agent; you hold the
 decisions), `git add` the files and verify both tasks involved, or run the rollback
-to abandon the whole patch. Exits 4 and 5 are STOPs with the fix printed. Before
-re-integrating a resumed agent, roll back its earlier integration if it was the
-last one; otherwise re-check the `--stat` for hunks you had already removed. Full
-table in the worktree protocol §6–7.
+to abandon the whole patch. Exits 4 and 5 are STOPs: act on them as the worktree
+protocol §6 says. Before re-integrating a resumed agent, roll back its earlier
+integration if it was the last one; otherwise re-check the `--stat` for hunks you
+had already removed. Full table in the worktree protocol §6–7.
 
 Verification commands in the main checkout must exclude `.claude/worktrees/`
 (test runners and `grep -r` would find the worktree copies), or run the full
